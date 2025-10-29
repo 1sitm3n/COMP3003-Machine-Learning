@@ -1,0 +1,502 @@
+function kmeans_clustering_main()
+    % COMP3003 Machine Learning - Assessment 1, Task 2
+    % My K-Means (from scratch) vs GMM comparison in MATLAB
+
+    % start clean so old figures/vars don't interfere
+    clear all; close all; clc;
+
+    %% 1) Make a simple synthetic dataset
+    fprintf('Generating synthetic dataset with 5 clusters...\n');
+
+    % fixed seed so I get the same plots/metrics each run
+    rng(42);
+
+    % I'm going for five 2D Gaussian blobs in different spots
+    n_clusters = 5;
+
+    % cluster means/covariances + how many points in each
+    % (roughly corners + one in the middle to make it interesting)
+    mu1 = [2, 2];
+    sigma1 = [0.8, 0; 0, 0.8];
+    n1 = 800;
+
+    mu2 = [2, 8];
+    sigma2 = [1.0, 0; 0, 1.0];
+    n2 = 600;
+
+    mu3 = [6, 5];
+    sigma3 = [1.2, 0; 0, 1.2];
+    n3 = 1000;
+
+    mu4 = [10, 2];
+    sigma4 = [0.9, 0; 0, 0.9];
+    n4 = 700;
+
+    mu5 = [10, 8];
+    sigma5 = [1.1, 0; 0, 1.1];
+    n5 = 900;
+
+    % draw samples for each blob
+    cluster1 = mvnrnd(mu1, sigma1, n1);
+    cluster2 = mvnrnd(mu2, sigma2, n2);
+    cluster3 = mvnrnd(mu3, sigma3, n3);
+    cluster4 = mvnrnd(mu4, sigma4, n4);
+    cluster5 = mvnrnd(mu5, sigma5, n5);
+
+    % stack everything together + keep the ground-truth labels
+    X = [cluster1; cluster2; cluster3; cluster4; cluster5];
+    true_labels = [ones(n1,1); 2*ones(n2,1); 3*ones(n3,1); 4*ones(n4,1); 5*ones(n5,1)];
+
+    % shuffle so plotting/metrics aren't biased by order
+    shuffle_idx = randperm(size(X, 1));
+    X = X(shuffle_idx, :);
+    true_labels = true_labels(shuffle_idx);
+
+    % quick look at the raw data
+    figure('Name', 'Original Dataset', 'Position', [100, 100, 1200, 400]);
+
+    subplot(1,3,1);
+    scatter(X(:,1), X(:,2), 10, true_labels, 'filled');
+    colormap(jet);
+    title('True Clusters');
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    grid on;
+
+    %% 2) K-Means (written myself)
+    fprintf('\n=== K-MEANS CLUSTERING ===\n');
+
+    % basic settings
+    K = 5;                % how many clusters to look for
+    max_iterations = 100; % hard stop
+    tolerance = 1e-6;     % stop when centroids barely move
+
+    % try a few random starts and keep the best one by inertia
+    n_runs = 10;
+    best_inertia = inf;
+    best_centroids = [];
+    best_labels = [];
+
+    for run = 1:n_runs
+        % K-Means++ usually gives nicer starting points
+        centroids = kmeans_plus_plus_init(X, K);
+
+        % run the actual algorithm
+        [labels, centroids, inertia, iterations] = kmeans_algorithm(X, K, centroids, max_iterations, tolerance);
+
+        % greedily keep the lowest WCSS we've seen
+        if inertia < best_inertia
+            best_inertia = inertia;
+            best_centroids = centroids;
+            best_labels = labels;
+        end
+    end
+
+    fprintf('Best K-Means inertia: %.4f\n', best_inertia);
+
+    % plot the final K-Means assignment + centroids
+    subplot(1,3,2);
+    scatter(X(:,1), X(:,2), 10, best_labels, 'filled');
+    hold on;
+    plot(best_centroids(:,1), best_centroids(:,2), 'kx', 'MarkerSize', 15, 'LineWidth', 3);
+    colormap(jet);
+    title('K-Means Clustering');
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    legend('Data Points', 'Centroids', 'Location', 'best');
+    grid on;
+
+    %% 3) Pick K (Elbow + Silhouette)
+    fprintf('\nFinding optimal number of clusters using Elbow Method...\n');
+
+    K_range = 2:10;
+    inertias = zeros(length(K_range), 1);
+    silhouettes = zeros(length(K_range), 1);
+
+    for i = 1:length(K_range)
+        K_test = K_range(i);
+
+        % do a few runs for each K and keep the best inertia again
+        best_test_inertia = inf;
+        best_test_labels = [];
+
+        for run = 1:5
+            centroids = kmeans_plus_plus_init(X, K_test);
+            [labels, ~, inertia, ~] = kmeans_algorithm(X, K_test, centroids, max_iterations, tolerance);
+
+            if inertia < best_test_inertia
+                best_test_inertia = inertia;
+                best_test_labels = labels;
+            end
+        end
+
+        inertias(i) = best_test_inertia;
+        silhouettes(i) = mean(silhouette(X, best_test_labels));
+    end
+
+    % elbow plot + a rough elbow guess via 2nd derivative
+    figure('Name', 'Optimal K Selection', 'Position', [100, 550, 1200, 400]);
+
+    subplot(1,2,1);
+    plot(K_range, inertias, 'b-o', 'LineWidth', 2);
+    xlabel('Number of Clusters (K)');
+    ylabel('Within-Cluster Sum of Squares');
+    title('Elbow Method');
+    grid on;
+
+    % mark the computed elbow point
+    [~, elbow_idx] = max(diff(diff(inertias)));
+    optimal_k = K_range(elbow_idx + 2);
+    hold on;
+    plot(optimal_k, inertias(elbow_idx + 2), 'r*', 'MarkerSize', 15);
+    legend('Inertia', sprintf('Optimal K=%d', optimal_k), 'Location', 'best');
+
+    % silhouette vs K for a sanity check
+    subplot(1,2,2);
+    plot(K_range, silhouettes, 'g-o', 'LineWidth', 2);
+    xlabel('Number of Clusters (K)');
+    ylabel('Average Silhouette Score');
+    title('Silhouette Analysis');
+    grid on;
+
+    %% 4) K-Means metrics
+    fprintf('\n=== K-MEANS PERFORMANCE METRICS ===\n');
+
+    % compute a few standard scores so I can compare with GMM fairly
+    [kmeans_metrics] = evaluate_clustering(X, best_labels, true_labels, best_centroids);
+
+    fprintf('Silhouette Score: %.4f\n', kmeans_metrics.silhouette);
+    fprintf('Davies-Bouldin Index: %.4f\n', kmeans_metrics.davies_bouldin);
+    fprintf('Calinski-Harabasz Index: %.4f\n', kmeans_metrics.calinski_harabasz);
+    fprintf('Adjusted Rand Index: %.4f\n', kmeans_metrics.ari);
+    fprintf('Normalized Mutual Information: %.4f\n', kmeans_metrics.nmi);
+
+    %% 5) GMM (using MATLAB's fitgmdist)
+    fprintf('\n=== GMM CLUSTERING ===\n');
+
+    % fit a K-component Gaussian mixture; small regularization to avoid singular Σ
+    gmm = fitgmdist(X, K, 'RegularizationValue', 0.01, 'Replicates', 5);
+
+    % hard labels from the fitted model
+    gmm_labels = cluster(gmm, X);
+
+    % and soft assignments (posteriors) for uncertainty plots
+    posterior_probs = posterior(gmm, X);
+
+    % drop GMM result into the first figure as panel #3
+    figure(1);
+    subplot(1,3,3);
+    scatter(X(:,1), X(:,2), 10, gmm_labels, 'filled');
+    hold on;
+    plot(gmm.mu(:,1), gmm.mu(:,2), 'kx', 'MarkerSize', 15, 'LineWidth', 3);
+    colormap(jet);
+    title('GMM Clustering');
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    legend('Data Points', 'Means', 'Location', 'best');
+    grid on;
+
+    % draw 1–2σ ellipses to show each Gaussian's shape
+    for k = 1:K
+        draw_gaussian_ellipse(gmm.mu(k,:), gmm.Sigma(:,:,k), 'k-', 2);
+    end
+
+    %% 6) GMM metrics
+    fprintf('\n=== GMM PERFORMANCE METRICS ===\n');
+
+    [gmm_metrics] = evaluate_clustering(X, gmm_labels, true_labels, gmm.mu);
+
+    fprintf('Silhouette Score: %.4f\n', gmm_metrics.silhouette);
+    fprintf('Davies-Bouldin Index: %.4f\n', gmm_metrics.davies_bouldin);
+    fprintf('Calinski-Harabasz Index: %.4f\n', gmm_metrics.calinski_harabasz);
+    fprintf('Adjusted Rand Index: %.4f\n', gmm_metrics.ari);
+    fprintf('Normalized Mutual Information: %.4f\n', gmm_metrics.nmi);
+    fprintf('Log-Likelihood: %.4f\n', gmm.NegativeLogLikelihood * -1);
+
+    %% 7) Side-by-side plots (K-Means vs GMM + uncertainty)
+    figure('Name', 'Clustering Comparison', 'Position', [100, 100, 1500, 500]);
+
+    % K-Means panel
+    subplot(1,3,1);
+    scatter(X(:,1), X(:,2), 10, best_labels, 'filled', 'MarkerEdgeAlpha', 0.6);
+    hold on;
+    plot(best_centroids(:,1), best_centroids(:,2), 'kx', 'MarkerSize', 15, 'LineWidth', 3);
+    title(sprintf('K-Means (Silhouette: %.3f)', kmeans_metrics.silhouette));
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    grid on;
+    colormap(jet);
+
+    % GMM panel
+    subplot(1,3,2);
+    scatter(X(:,1), X(:,2), 10, gmm_labels, 'filled', 'MarkerEdgeAlpha', 0.6);
+    hold on;
+    plot(gmm.mu(:,1), gmm.mu(:,2), 'kx', 'MarkerSize', 15, 'LineWidth', 3);
+    for k = 1:K
+        draw_gaussian_ellipse(gmm.mu(k,:), gmm.Sigma(:,:,k), 'k-', 1);
+    end
+    title(sprintf('GMM (Silhouette: %.3f)', gmm_metrics.silhouette));
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    grid on;
+
+    % uncertainty = 1 − max posterior across components
+    subplot(1,3,3);
+    uncertainty = 1 - max(posterior_probs, [], 2);
+    scatter(X(:,1), X(:,2), 10, uncertainty, 'filled');
+    colorbar;
+    title('GMM Uncertainty (1 - max posterior)');
+    xlabel('Feature 1');
+    ylabel('Feature 2');
+    grid on;
+    colormap(flipud(hot));
+
+    %% 8) Quick bar chart to compare metrics numerically
+    figure('Name', 'Performance Metrics Comparison', 'Position', [700, 100, 800, 600]);
+
+    metrics_names = {'Silhouette', 'Davies-Bouldin', 'Calinski-Harabasz', 'ARI', 'NMI'};
+    % scale CH by 1e3 just so the bars fit on the same axis nicely
+    kmeans_values = [kmeans_metrics.silhouette, kmeans_metrics.davies_bouldin, ...
+                     kmeans_metrics.calinski_harabasz/1000, kmeans_metrics.ari, kmeans_metrics.nmi];
+    gmm_values = [gmm_metrics.silhouette, gmm_metrics.davies_bouldin, ...
+                  gmm_metrics.calinski_harabasz/1000, gmm_metrics.ari, gmm_metrics.nmi];
+
+    bar_data = [kmeans_values; gmm_values]';
+    bar(bar_data);
+    set(gca, 'XTickLabel', metrics_names);
+    xlabel('Metrics');
+    ylabel('Score');
+    title('Clustering Performance Comparison');
+    legend('K-Means', 'GMM', 'Location', 'best');
+    grid on;
+
+    fprintf('\n=== CLUSTERING ANALYSIS COMPLETE ===\n');
+end
+
+%% K-Means core (assignment + update + stop)
+function [labels, centroids, inertia, iterations] = kmeans_algorithm(X, K, init_centroids, max_iterations, tolerance)
+    n = size(X, 1);
+    centroids = init_centroids;
+    prev_centroids = zeros(size(centroids));
+    labels = zeros(n, 1);
+    iterations = 0;
+
+    while iterations < max_iterations
+        % assignment: send each point to its nearest centroid
+        distances = pdist2(X, centroids, 'euclidean');
+        [min_distances, labels] = min(distances, [], 2);
+
+        % update: recalc each centroid as the mean of its members
+        prev_centroids = centroids;
+        for k = 1:K
+            cluster_points = X(labels == k, :);
+            if ~isempty(cluster_points)
+                centroids(k, :) = mean(cluster_points, 1);
+            end
+        end
+
+        % stop if centroids barely move anymore
+        if norm(centroids - prev_centroids, 'fro') < tolerance
+            break;
+        end
+
+        iterations = iterations + 1;
+    end
+
+    % WCSS (what K-Means is minimising)
+    inertia = sum(min_distances.^2);
+end
+
+%% K-Means++ seeding (pick spread-out starting points)
+function centroids = kmeans_plus_plus_init(X, K)
+    n = size(X, 1);
+    centroids = zeros(K, size(X, 2));
+
+    % first centroid = random data point
+    centroids(1, :) = X(randi(n), :);
+
+    % next ones: probability ∝ distance^2 from nearest chosen centroid
+    for k = 2:K
+        % distance of every point to its closest current centroid
+        distances = pdist2(X, centroids(1:k-1, :), 'euclidean');
+        min_distances = min(distances, [], 2);
+
+        % sample an index with those weights
+        probabilities = min_distances.^2 / sum(min_distances.^2);
+        cumsum_prob = cumsum(probabilities);
+        r = rand();
+        idx = find(cumsum_prob >= r, 1, 'first');
+        centroids(k, :) = X(idx, :);
+    end
+end
+
+%% Helper to compute a bunch of clustering scores
+function metrics = evaluate_clustering(X, predicted_labels, true_labels, centers)
+    % average silhouette across all points
+    metrics.silhouette = mean(silhouette(X, predicted_labels));
+
+    % DBI: lower is better (tight + well separated)
+    metrics.davies_bouldin = davies_bouldin_index(X, predicted_labels, centers);
+
+    % CHI: higher is better (between vs within dispersion)
+    metrics.calinski_harabasz = calinski_harabasz_index(X, predicted_labels);
+
+    % ARI: label-based agreement, chance-adjusted
+    metrics.ari = adjusted_rand_index(true_labels, predicted_labels);
+
+    % NMI: information-theoretic agreement (symmetric)
+    metrics.nmi = normalized_mutual_info(true_labels, predicted_labels);
+end
+
+%% Davies–Bouldin (implemented directly from the definition)
+function dbi = davies_bouldin_index(X, labels, centers)
+    K = size(centers, 1);
+    S = zeros(K, 1);
+
+    % average intra-cluster distance to the centroid for each cluster
+    for k = 1:K
+        cluster_points = X(labels == k, :);
+        if ~isempty(cluster_points)
+            S(k) = mean(sqrt(sum((cluster_points - centers(k, :)).^2, 2)));
+        end
+    end
+
+    % pairwise "worst case" ratio across clusters
+    R = zeros(K, K);
+    for i = 1:K
+        for j = 1:K
+            if i ~= j
+                d_ij = norm(centers(i, :) - centers(j, :));
+                if d_ij > 0
+                    R(i, j) = (S(i) + S(j)) / d_ij;
+                end
+            end
+        end
+    end
+
+    dbi = mean(max(R, [], 2));
+end
+
+%% Calinski–Harabasz (between vs within scatter)
+function chi = calinski_harabasz_index(X, labels)
+    [n, ~] = size(X);
+    K = length(unique(labels));
+
+    % global mean
+    overall_mean = mean(X, 1);
+
+    % split total variance into between (SSB) and within (SSW)
+    SSB = 0;
+    SSW = 0;
+
+    for k = 1:K
+        cluster_points = X(labels == k, :);
+        n_k = size(cluster_points, 1);
+
+        if n_k > 0
+            cluster_mean = mean(cluster_points, 1);
+            SSB = SSB + n_k * sum((cluster_mean - overall_mean).^2);
+            SSW = SSW + sum(sum((cluster_points - cluster_mean).^2, 2));
+        end
+    end
+
+    chi = (SSB / (K - 1)) / (SSW / (n - K));
+end
+
+%% Adjusted Rand Index (simple contingency-table version)
+function ari = adjusted_rand_index(true_labels, pred_labels)
+    % build contingency table of true vs predicted clusters
+    n = length(true_labels);
+    true_unique = unique(true_labels);
+    pred_unique = unique(pred_labels);
+
+    contingency = zeros(length(true_unique), length(pred_unique));
+    for i = 1:length(true_unique)
+        for j = 1:length(pred_unique)
+            contingency(i, j) = sum(true_labels == true_unique(i) & pred_labels == pred_unique(j));
+        end
+    end
+
+    % safe nC2 helper so we don't call nchoosek on zeros
+    comb2 = @(x) max(0, x * (x - 1) / 2);
+
+    % sums over rows/cols/all
+    sum_comb_c = sum(arrayfun(comb2, sum(contingency, 2)));
+    sum_comb_k = sum(arrayfun(comb2, sum(contingency, 1)));
+    sum_comb_all = sum(arrayfun(comb2, contingency(:)));
+
+    % total pairs of points
+    total_pairs = n * (n - 1) / 2;
+
+    expected_index = sum_comb_c * sum_comb_k / total_pairs;
+    max_index = (sum_comb_c + sum_comb_k) / 2;
+
+    % guard against divide-by-zero when partitions are trivial
+    if max_index - expected_index == 0
+        ari = 0;
+    else
+        ari = (sum_comb_all - expected_index) / (max_index - expected_index);
+    end
+end
+
+%% Normalised Mutual Information (logs are natural here)
+function nmi = normalized_mutual_info(true_labels, pred_labels)
+    % compute MI(true, pred) and normalise by average entropy
+    n = length(true_labels);
+    true_unique = unique(true_labels);
+    pred_unique = unique(pred_labels);
+
+    MI = 0;
+    H_true = 0;
+    H_pred = 0;
+
+    % entropies
+    for i = 1:length(true_unique)
+        p_i = sum(true_labels == true_unique(i)) / n;
+        if p_i > 0
+            H_true = H_true - p_i * log(p_i);
+        end
+    end
+
+    for j = 1:length(pred_unique)
+        p_j = sum(pred_labels == pred_unique(j)) / n;
+        if p_j > 0
+            H_pred = H_pred - p_j * log(p_j);
+        end
+    end
+
+    % mutual information
+    for i = 1:length(true_unique)
+        for j = 1:length(pred_unique)
+            p_ij = sum(true_labels == true_unique(i) & pred_labels == pred_unique(j)) / n;
+            p_i = sum(true_labels == true_unique(i)) / n;
+            p_j = sum(pred_labels == pred_unique(j)) / n;
+
+            if p_ij > 0 && p_i > 0 && p_j > 0
+                MI = MI + p_ij * log(p_ij / (p_i * p_j));
+            end
+        end
+    end
+
+    nmi = 2 * MI / (H_true + H_pred);
+end
+
+%% Little helper to draw a covariance ellipse around a mean
+function draw_gaussian_ellipse(mu, Sigma, style, linewidth)
+    % parametric circle → stretch by eigenvalues → rotate by eigenvectors
+    theta = 0:0.01:2*pi;
+    [V, D] = eig(Sigma);
+
+    % semi-axes for ~95% mass if we use 2σ
+    a = 2 * sqrt(D(1,1));
+    b = 2 * sqrt(D(2,2));
+
+    % ellipse in canonical position
+    ellipse = [a * cos(theta); b * sin(theta)];
+
+    % rotate + translate into data coordinates
+    ellipse = V * ellipse + mu';
+
+    % draw it
+    plot(ellipse(1,:), ellipse(2,:), style, 'LineWidth', linewidth);
+end
