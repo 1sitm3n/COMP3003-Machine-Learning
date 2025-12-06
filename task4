@@ -1,0 +1,352 @@
+%% ===============================================================
+% TASK 4 – Dry Bean Classification (COMP3003 Assessment 2)
+% Models: Gaussian Naive Bayes + Feedforward Neural Network (64-32)
+% Dataset: Dry Bean Dataset (UCI)
+% ===============================================================
+
+clear; clc; close all;
+rng(42); % Reproducibility
+
+%% ===============================================================
+% 1. LOAD AND INSPECT DATA
+% ===============================================================
+
+fprintf('=== TASK 4: DRY BEAN CLASSIFICATION ===\n\n');
+
+% Load dataset
+data = readtable('Dry_Bean_Dataset.csv');
+
+fprintf('Dataset Preview:\n');
+disp(head(data, 5));
+
+fprintf('\nDataset Dimensions: %d samples x %d columns\n', height(data), width(data));
+
+% Check for missing values
+missingCount = sum(ismissing(data));
+fprintf('Total missing values: %d\n\n', sum(missingCount));
+
+%% ===============================================================
+% 2. PREPROCESSING
+% ===============================================================
+
+fprintf('=== PREPROCESSING ===\n\n');
+
+% Extract features and labels
+featureNames = data.Properties.VariableNames(1:16);
+X = table2array(data(:, 1:16));
+classLabels = data.Class;
+
+% Convert class labels to numeric
+[classNames, ~, y] = unique(classLabels);
+nClasses = numel(classNames);
+
+fprintf('Classes (%d):\n', nClasses);
+for c = 1:nClasses
+    count = sum(y == c);
+    fprintf('  %d. %s: %d samples (%.1f%%)\n', c, classNames{c}, count, 100*count/numel(y));
+end
+
+% Z-score normalisation
+mu = mean(X);
+sigma = std(X);
+X_norm = (X - mu) ./ sigma;
+
+fprintf('\nNormalisation complete (z-score).\n');
+
+% Feature correlation analysis
+corrMatrix = corrcoef(X_norm);
+fprintf('\nHighly correlated feature pairs (|r| > 0.9):\n');
+for i = 1:16
+    for j = i+1:16
+        if abs(corrMatrix(i,j)) > 0.9
+            fprintf('  %s - %s: r = %.3f\n', featureNames{i}, featureNames{j}, corrMatrix(i,j));
+        end
+    end
+end
+
+% Plot correlation matrix
+figure('Position', [100, 100, 800, 700]);
+heatmap(featureNames, featureNames, corrMatrix, 'Colormap', parula, 'ColorbarVisible', 'on');
+title('Feature Correlation Matrix');
+saveas(gcf, 'correlation_matrix.png');
+
+%% ===============================================================
+% 3. TRAIN-TEST SPLIT
+% ===============================================================
+
+fprintf('\n=== TRAIN-TEST SPLIT ===\n\n');
+
+cv_holdout = cvpartition(y, 'HoldOut', 0.3);
+X_train = X_norm(training(cv_holdout), :);
+y_train = y(training(cv_holdout));
+X_test = X_norm(test(cv_holdout), :);
+y_test = y(test(cv_holdout));
+
+fprintf('Training samples: %d (70%%)\n', numel(y_train));
+fprintf('Test samples: %d (30%%)\n', numel(y_test));
+
+%% ===============================================================
+% 4. K-FOLD CROSS-VALIDATION ANALYSIS
+% ===============================================================
+
+fprintf('\n=== K-FOLD CROSS-VALIDATION ANALYSIS ===\n\n');
+
+k_values = [3, 5, 10];
+kfold_results = table();
+
+for k = k_values
+    fprintf('Evaluating k = %d...\n', k);
+    
+    cv_k = cvpartition(y_train, 'KFold', k);
+    
+    % Gaussian Naive Bayes
+    nb_model_temp = fitcnb(X_train, y_train, 'DistributionNames', 'normal');
+    nb_cv = crossval(nb_model_temp, 'CVPartition', cv_k);
+    
+    % Get fold-wise accuracies
+    nb_fold_acc = zeros(k, 1);
+    for fold = 1:k
+        fold_pred = predict(nb_cv.Trained{fold}, X_train(test(cv_k, fold), :));
+        fold_true = y_train(test(cv_k, fold));
+        nb_fold_acc(fold) = sum(fold_pred == fold_true) / numel(fold_true);
+    end
+    
+    nb_mean = mean(nb_fold_acc);
+    nb_std = std(nb_fold_acc);
+    
+    % Store results
+    new_row = table(k, nb_mean, nb_std, 'VariableNames', {'k', 'NB_Mean', 'NB_Std'});
+    kfold_results = [kfold_results; new_row];
+end
+
+fprintf('\nK-Fold Comparison Results:\n');
+disp(kfold_results);
+
+fprintf('\nSelected k = 5 based on bias-variance tradeoff.\n');
+
+%% ===============================================================
+% 5. GAUSSIAN NAIVE BAYES CLASSIFIER
+% ===============================================================
+
+fprintf('\n=== GAUSSIAN NAIVE BAYES ===\n\n');
+
+% Train model
+nb_model = fitcnb(X_train, y_train, ...
+    'DistributionNames', 'normal', ...
+    'Prior', 'empirical');
+
+% 5-fold cross-validation
+cv_5 = cvpartition(y_train, 'KFold', 5);
+nb_cv_model = crossval(nb_model, 'CVPartition', cv_5);
+nb_cv_accuracy = 1 - kfoldLoss(nb_cv_model);
+fprintf('5-Fold CV Accuracy: %.4f (%.2f%%)\n', nb_cv_accuracy, nb_cv_accuracy*100);
+
+% Test set predictions
+y_pred_nb = predict(nb_model, X_test);
+nb_test_accuracy = sum(y_pred_nb == y_test) / numel(y_test);
+fprintf('Test Accuracy: %.4f (%.2f%%)\n', nb_test_accuracy, nb_test_accuracy*100);
+
+% Confusion matrix
+figure('Position', [100, 100, 700, 600]);
+cm_nb = confusionchart(y_test, y_pred_nb, ...
+    'RowSummary', 'row-normalized', ...
+    'ColumnSummary', 'column-normalized');
+cm_nb.Title = 'Gaussian Naive Bayes Confusion Matrix';
+cm_nb.RowSummary = 'row-normalized';
+saveas(gcf, 'nb_confusion_matrix.png');
+
+%% ===============================================================
+% 6. ALTERNATIVE NAIVE BAYES DISTRIBUTIONS
+% ===============================================================
+
+fprintf('\n=== ALTERNATIVE NB DISTRIBUTIONS ===\n\n');
+
+% Kernel Naive Bayes
+nb_kernel = fitcnb(X_train, y_train, 'DistributionNames', 'kernel');
+y_pred_kernel = predict(nb_kernel, X_test);
+kernel_accuracy = sum(y_pred_kernel == y_test) / numel(y_test);
+fprintf('Kernel NB Test Accuracy: %.4f (%.2f%%)\n', kernel_accuracy, kernel_accuracy*100);
+
+fprintf('\nDistribution Comparison:\n');
+fprintf('  Gaussian NB: %.2f%%\n', nb_test_accuracy*100);
+fprintf('  Kernel NB: %.2f%%\n', kernel_accuracy*100);
+fprintf('  Multinomial NB: N/A (requires count data)\n');
+fprintf('  Bernoulli NB: N/A (requires binary data)\n');
+
+%% ===============================================================
+% 7. NEURAL NETWORK CLASSIFIER
+% ===============================================================
+
+fprintf('\n=== NEURAL NETWORK (64-32) ===\n\n');
+
+% Prepare data for NN toolbox
+X_train_T = X_train';
+X_test_T = X_test';
+Y_train_onehot = full(ind2vec(y_train'))';
+Y_train_T = Y_train_onehot';
+
+% Define architecture
+hiddenLayers = [64, 32];
+net = patternnet(hiddenLayers);
+
+% Configure network
+net.trainFcn = 'trainscg';           % Scaled conjugate gradient
+net.performFcn = 'crossentropy';      % Cross-entropy loss
+
+% Data division for early stopping
+net.divideParam.trainRatio = 0.8;
+net.divideParam.valRatio = 0.1;
+net.divideParam.testRatio = 0.1;
+
+% Training parameters
+net.trainParam.epochs = 500;
+net.trainParam.max_fail = 20;         % Early stopping patience
+net.trainParam.showWindow = true;
+
+% Train network
+fprintf('Training neural network...\n');
+tic;
+[net, tr] = train(net, X_train_T, Y_train_T);
+training_time = toc;
+fprintf('Training completed in %.2f seconds.\n', training_time);
+
+% Test set predictions
+nn_output = net(X_test_T);
+[~, y_pred_nn] = max(nn_output, [], 1);
+y_pred_nn = y_pred_nn';
+
+nn_test_accuracy = sum(y_pred_nn == y_test) / numel(y_test);
+fprintf('Test Accuracy: %.4f (%.2f%%)\n', nn_test_accuracy, nn_test_accuracy*100);
+
+% Confusion matrix
+figure('Position', [100, 100, 700, 600]);
+cm_nn = confusionchart(y_test, y_pred_nn, ...
+    'RowSummary', 'row-normalized', ...
+    'ColumnSummary', 'column-normalized');
+cm_nn.Title = 'Neural Network (64-32) Confusion Matrix';
+saveas(gcf, 'nn_confusion_matrix.png');
+
+%% ===============================================================
+% 8. COMPREHENSIVE METRICS COMPUTATION
+% ===============================================================
+
+fprintf('\n=== CLASSIFICATION METRICS ===\n\n');
+
+% Function to compute metrics
+computeMetrics = @(y_true, y_pred) deal(...
+    arrayfun(@(c) sum((y_pred==c)&(y_true==c)) / (sum(y_pred==c)+eps), 1:nClasses), ...  % Precision
+    arrayfun(@(c) sum((y_pred==c)&(y_true==c)) / (sum(y_true==c)+eps), 1:nClasses), ...  % Recall
+    arrayfun(@(c) 2*sum((y_pred==c)&(y_true==c)) / (sum(y_pred==c)+sum(y_true==c)+eps), 1:nClasses));  % F1
+
+% Naive Bayes metrics
+prec_nb = zeros(nClasses, 1);
+rec_nb = zeros(nClasses, 1);
+f1_nb = zeros(nClasses, 1);
+
+for c = 1:nClasses
+    TP = sum((y_pred_nb == c) & (y_test == c));
+    FP = sum((y_pred_nb == c) & (y_test ~= c));
+    FN = sum((y_pred_nb ~= c) & (y_test == c));
+    
+    prec_nb(c) = TP / (TP + FP + eps);
+    rec_nb(c) = TP / (TP + FN + eps);
+    f1_nb(c) = 2 * prec_nb(c) * rec_nb(c) / (prec_nb(c) + rec_nb(c) + eps);
+end
+
+% Neural Network metrics
+prec_nn = zeros(nClasses, 1);
+rec_nn = zeros(nClasses, 1);
+f1_nn = zeros(nClasses, 1);
+
+for c = 1:nClasses
+    TP = sum((y_pred_nn == c) & (y_test == c));
+    FP = sum((y_pred_nn == c) & (y_test ~= c));
+    FN = sum((y_pred_nn ~= c) & (y_test == c));
+    
+    prec_nn(c) = TP / (TP + FP + eps);
+    rec_nn(c) = TP / (TP + FN + eps);
+    f1_nn(c) = 2 * prec_nn(c) * rec_nn(c) / (prec_nn(c) + rec_nn(c) + eps);
+end
+
+% Display Naive Bayes metrics
+fprintf('GAUSSIAN NAIVE BAYES - Class-level Metrics:\n');
+fprintf('%-12s %10s %10s %10s\n', 'Class', 'Precision', 'Recall', 'F1-Score');
+fprintf('%s\n', repmat('-', 1, 45));
+for c = 1:nClasses
+    fprintf('%-12s %10.4f %10.4f %10.4f\n', classNames{c}, prec_nb(c), rec_nb(c), f1_nb(c));
+end
+fprintf('%s\n', repmat('-', 1, 45));
+fprintf('%-12s %10.4f %10.4f %10.4f\n', 'Macro Avg', mean(prec_nb), mean(rec_nb), mean(f1_nb));
+
+fprintf('\n');
+
+% Display Neural Network metrics
+fprintf('NEURAL NETWORK (64-32) - Class-level Metrics:\n');
+fprintf('%-12s %10s %10s %10s\n', 'Class', 'Precision', 'Recall', 'F1-Score');
+fprintf('%s\n', repmat('-', 1, 45));
+for c = 1:nClasses
+    fprintf('%-12s %10.4f %10.4f %10.4f\n', classNames{c}, prec_nn(c), rec_nn(c), f1_nn(c));
+end
+fprintf('%s\n', repmat('-', 1, 45));
+fprintf('%-12s %10.4f %10.4f %10.4f\n', 'Macro Avg', mean(prec_nn), mean(rec_nn), mean(f1_nn));
+
+%% ===============================================================
+% 9. SUMMARY COMPARISON
+% ===============================================================
+
+fprintf('\n=== FINAL COMPARISON ===\n\n');
+
+fprintf('%-25s %15s %15s\n', 'Metric', 'Gaussian NB', 'Neural Network');
+fprintf('%s\n', repmat('=', 1, 55));
+fprintf('%-25s %14.2f%% %14.2f%%\n', 'Test Accuracy', nb_test_accuracy*100, nn_test_accuracy*100);
+fprintf('%-25s %14.2f%% %14.2f%%\n', 'Macro Precision', mean(prec_nb)*100, mean(prec_nn)*100);
+fprintf('%-25s %14.2f%% %14.2f%%\n', 'Macro Recall', mean(rec_nb)*100, mean(rec_nn)*100);
+fprintf('%-25s %14.2f%% %14.2f%%\n', 'Macro F1-Score', mean(f1_nb)*100, mean(f1_nn)*100);
+fprintf('%s\n', repmat('=', 1, 55));
+
+fprintf('\nPerformance Difference: %.2f percentage points in favor of Neural Network\n', ...
+    (nn_test_accuracy - nb_test_accuracy)*100);
+
+%% ===============================================================
+% 10. FEATURE DISTRIBUTION PLOTS
+% ===============================================================
+
+% Plot feature distributions to justify Gaussian assumption
+figure('Position', [100, 100, 1200, 900]);
+for j = 1:16
+    subplot(4, 4, j);
+    histogram(X_norm(:, j), 30, 'Normalization', 'pdf', 'FaceColor', [0.3 0.6 0.9]);
+    hold on;
+    x_range = linspace(min(X_norm(:, j)), max(X_norm(:, j)), 100);
+    plot(x_range, normpdf(x_range, 0, 1), 'r-', 'LineWidth', 1.5);
+    title(featureNames{j}, 'FontSize', 8);
+    xlabel('');
+    ylabel('');
+end
+sgtitle('Feature Distributions vs Standard Normal (Red Line)');
+saveas(gcf, 'feature_distributions.png');
+
+%% ===============================================================
+% 11. TRAINING PERFORMANCE PLOT
+% ===============================================================
+
+figure('Position', [100, 100, 800, 500]);
+plot(tr.perf, 'b-', 'LineWidth', 1.5);
+hold on;
+plot(tr.vperf, 'r-', 'LineWidth', 1.5);
+plot(tr.tperf, 'g-', 'LineWidth', 1.5);
+xlabel('Epoch');
+ylabel('Cross-Entropy Loss');
+legend('Training', 'Validation', 'Test', 'Location', 'northeast');
+title('Neural Network Training Performance');
+grid on;
+saveas(gcf, 'nn_training_performance.png');
+
+fprintf('\n=== ANALYSIS COMPLETE ===\n');
+fprintf('Figures saved: correlation_matrix.png, nb_confusion_matrix.png,\n');
+fprintf('               nn_confusion_matrix.png, feature_distributions.png,\n');
+fprintf('               nn_training_performance.png\n');
+
+%% ===============================================================
+% END OF SCRIPT
+% ===============================================================
